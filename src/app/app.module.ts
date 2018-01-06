@@ -51,6 +51,11 @@ import { DatabaseService } from "../toolkit/providers/database-service"
 import { networkProvider } from "../toolkit/providers/network"
 import { ToolkitModule } from "../toolkit/toolkit.module"
 
+import { Container } from "inversify"
+import {
+  initContainer, MyLibContainer, ServiceA, ServiceB, ServiceC,
+} from "./inversify-tests"
+
 import { MyApp } from "./app.component"
 import { registerLocales } from "./locales"
 
@@ -113,10 +118,31 @@ registerLocales()
     networkProvider,
     AppVersion,
 
+    ServiceA,
+    ServiceC,
+
+    // Provider for the Inversify container from 'mylib'
+    // Unfortunately, it is not possible to make a macro function due to the lambda.
+    // That would fail with Angular AOT!
+    {
+      provide: MyLibContainer,
+      deps: [ServiceC],
+      useFactory: (s) => initContainer(s),
+    },
+
+    // Provider for ServiceB from 'mylib'
+    // Unfortunately, it is not possible to make a macro function due to the lambda.
+    // That would fail with Angular AOT!
+    {
+      provide: ServiceB,
+      deps: [MyLibContainer],
+      useFactory: (c: Container) => c.get(ServiceB),
+    },
+
     // App Initializer
     {
       provide: APP_INITIALIZER,
-      deps: [ConfigurationService, DatabaseHelper, AuthService, DatabaseService],
+      deps: [ConfigurationService, DatabaseHelper, AuthService, DatabaseService, ServiceA],
       useFactory: initializeApplication,
       multi: true,
     },
@@ -126,13 +152,15 @@ export class AppModule {
 }
 
 export function initializeApplication(configuration: ConfigurationService,
-                               databaseHelper: DatabaseHelper,
-                               authService: AuthService,
-                               databaseService: DatabaseService) {
+                                      databaseHelper: DatabaseHelper,
+                                      authService: AuthService,
+                                      databaseService: DatabaseService,
+                                      serviceA: ServiceA) {
   return async () => {
     await configuration.loadConfiguration()
     await databaseHelper.initialize()
     await authService.initialize()
     await databaseService.initialize()
+    console.log(serviceA.greet('Luke'))
   }
 }
