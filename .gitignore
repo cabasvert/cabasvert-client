@@ -35,6 +35,7 @@ UserInterfaceState.xcuserstate
 
 .sourcemaps
 
+src/version.ts
 src/config.prod.json
 
 android/keystore.properties
