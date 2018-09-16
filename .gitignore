@@ -38,6 +38,7 @@ UserInterfaceState.xcuserstate
 src/version.ts
 src/config.prod.json
 
+android/version.properties
 android/keystore.properties
 android/app/src/main/assets/public
 android/app/build
