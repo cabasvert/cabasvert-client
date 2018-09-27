@@ -17,180 +17,117 @@
  * along with CabasVert.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-import { Injectable } from '@angular/core'
-import { Observable } from "rxjs/Observable"
-import { timer } from "rxjs/observable/timer"
-import { distinct, map, publishReplay, refCount, switchMap, take } from "rxjs/operators"
-import { DatabaseService } from "../../toolkit/providers/database-service"
-import { Season, SeasonWeek } from "./season.model"
+import { Injectable, OnDestroy } from '@angular/core';
+import { Observable } from 'rxjs/Observable';
+import { Subscription } from 'rxjs/Subscription';
+import { timer } from 'rxjs/observable/timer';
+import {
+  distinctUntilChanged,
+  map,
+  publishReplay,
+  refCount,
+  switchMap,
+  take,
+} from 'rxjs/operators';
+import { DatabaseService } from '../../toolkit/providers/database-service';
+import { filterNotNull } from '../../utils/observables';
+import { Season, SeasonWeek } from './season.model';
 
 @Injectable()
-export class SeasonService {
+export class SeasonService implements OnDestroy {
 
-  private static today() {
-    let date = new Date()
-    date.setHours(0, 0, 0, 0)
-    return date
-  }
-
-  private today$: Observable<Date> =
+  private static readonly today$: Observable<Date> =
     timer(0, 60 * 1000).pipe(
-      map(_ => SeasonService.today()),
-      distinct(d => d.getDate()),
+      map(() => Date.today()),
+      distinctUntilChanged((d1, d2) => d1.getDate() === d2.getDate()),
       publishReplay(1),
       refCount(),
-    )
+    );
 
-  private _todaysSeason$: Observable<Season> =
-    this.today$.pipe(
-      switchMap(today => this.seasonForDate$(today)),
-      publishReplay(1),
-      refCount(),
-    )
+  private _seasonMapper = doc => new Season(this, doc);
+  private _seasonIndexer = season => season.id;
 
-  private _todaysSeasonWeek$: Observable<SeasonWeek> =
-    this.today$.pipe(
-      switchMap(today => this.seasonWeekForDate$(today)),
-      publishReplay(1),
-      refCount(),
-    )
+  public readonly allSeasons$: Observable<Season[]>;
+  public readonly allSeasonsIndexed$: Observable<Map<string, Season>>;
+  public readonly lastSeason$: Observable<Season>;
+  public readonly todaysSeasonWeek$: Observable<SeasonWeek>;
 
-  private _seasons$: Observable<Season[]>
-  private _seasonsIndexed$: Observable<{ [id: string]: Season }>
-  private _lastThreeSeasons$: Observable<Season[]>
+  private _subscription = new Subscription();
 
   constructor(private mainDatabase: DatabaseService) {
 
     // All seasons
-    this._seasons$ = this.mainDatabase
-      .withIndex$({
-        index: {
-          fields: ['type'],
-        },
-      })
-      .pipe(
-        switchMap(db => db.findAll$({
-          selector: {
-            type: 'season',
-          },
-        })),
-        map((ss: any[]) => ss.map(s => new Season(this, s))),
-        publishReplay(1),
-        refCount(),
-      )
+    let query = {
+      selector: {
+        type: 'season',
+      },
+      use_index: 'type',
+    };
 
-    // TODO Make more optimal by using changes directly and not mapping the result of findAll
-    this._seasonsIndexed$ = this.seasons$.pipe(
+    let db$ = this.mainDatabase.withIndex$({ index: { fields: ['type'], ddoc: 'type' } });
+
+    this.allSeasons$ = db$.pipe(
+      switchMap(db => db.findAll$(query)),
+      map((ss: any[]) => ss.map(this._seasonMapper)),
+      publishReplay(1),
+      refCount(),
+    );
+
+    this.allSeasonsIndexed$ = this.allSeasons$.pipe(
       map(
         ss => ss.reduce(
           (acc, s) => {
-            acc[s.id] = s
-            return acc
+            acc[this._seasonIndexer(s)] = s;
+            return acc;
           },
           {},
         ),
       ),
       publishReplay(1),
       refCount(),
-    )
+    );
 
-    // Last three seasons
-    this._lastThreeSeasons$ = this._lastSeasons$(3).pipe(
+    this.lastSeason$ = this.lastSeasons$(1).pipe(map(ss => ss[0]));
+
+    this.todaysSeasonWeek$ = SeasonService.today$.pipe(
+      switchMap(today => this.seasonWeekForDate$(today)),
+      filterNotNull(),
       publishReplay(1),
       refCount(),
-    )
+    );
+
+    this._subscription.add(this.todaysSeasonWeek$.subscribe());
+    this._subscription.add(this.allSeasons$.subscribe());
+    this._subscription.add(this.allSeasonsIndexed$.subscribe());
   }
 
-  lastSeasons$(count: number = 1): Observable<Season[]> {
-    if (count <= 3) {
-      return this._lastThreeSeasons$.pipe(
-        map(ss => ss.slice(0, count))
-      )
-    } else {
-      return this._lastSeasons$(count)
-    }
+  ngOnDestroy() {
+    this._subscription.unsubscribe();
   }
 
-  private _lastSeasons$(count: number = 1): Observable<Season[]> {
-    let query = {
-      selector: {
-        type: 'season',
-      },
-      sort: [{
-        type: 'desc',
-        _id: 'desc',
-      }],
-      limit: count,
-    }
-
-    let db$ = this.mainDatabase.withIndex$({
-        index: {
-          fields: ['type', '_id'],
-        },
-      },
-    )
-    return db$.pipe(
-      switchMap(db =>
-        db.findAll$(query).pipe(
-          take(1),
-          map((docs: any[]) => docs.map(d => d ? new Season(this, d) : null)),
-        ),
-      ),
-    )
+  lastSeasons$(count: number = -1): Observable<Season[]> {
+    return this.allSeasons$.pipe(
+      map(ss => ss.sort(this._byDescendingSeasonId)),
+      map(ss => count === -1 ? ss : ss.slice(0, count)),
+    );
   }
+
+  private _bySeasonId = (s1, s2) => s1.id.localeCompare(s2.id);
+  private _byDescendingSeasonId = (s1, s2) => -this._bySeasonId(s1, s2);
 
   seasonForDate$(date: Date = new Date()): Observable<Season> {
-    let query = {
-      selector: {
-        type: 'season',
-        startDate: { $lte: SeasonService.deltaDate(date).toISOString() },
-        endDate: { $gt: SeasonService.deltaDate(date).toISOString() },
-      },
-    }
-
-    let db$ = this.mainDatabase.withIndex$({
-      index: {
-        fields: ['type', 'startDate', 'endDate'],
-      },
-    })
-    return db$.pipe(
-      switchMap(db => db.findOne$(query)),
-      map(doc => doc ? new Season(this, doc) : null),
-    )
+    return this.allSeasons$.pipe(map(ss => ss.find(s => s.contains(date))));
   }
 
   seasonWeekForDate$(date: Date = new Date()): Observable<SeasonWeek> {
-    return this.seasonForDate$(date).pipe(
-      map(s => s ? s.seasonWeek(SeasonService.deltaDate(date)) : null),
-    )
-  }
-
-  get todaysSeason$(): Observable<Season> {
-    return this._todaysSeason$
-  }
-
-  get todaysSeasonWeek$() {
-    return this._todaysSeasonWeek$
-  }
-
-  get seasons$(): Observable<Season[]> {
-    return this._seasons$
-  }
-
-  get seasonsIndexed$(): Observable<{ [id: string]: Season }> {
-    return this._seasonsIndexed$
+    return this.seasonForDate$(date).pipe(filterNotNull(), map(s => s.seasonWeek(date)));
   }
 
   seasonById$(id: string): Observable<Season> {
-    return this.seasonsIndexed$.pipe(map(ss => ss[id]))
+    return this.allSeasonsIndexed$.pipe(map(ss => ss.get(id)));
   }
 
   seasonNameById$(id: string): Observable<string> {
-    return this.seasonById$(id).pipe(map(s => s.name))
-  }
-
-  // FIXME This is a hack to have distribution weeks start 5 days before the distribution day
-  private static deltaDate(date: Date) {
-    return date.addDays(4)
+    return this.seasonById$(id).pipe(map(s => s.name));
   }
 }
