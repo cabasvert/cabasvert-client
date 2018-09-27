@@ -47,7 +47,7 @@ export class PersonEditPage {
       address: null,
       phoneNumber: null,
       emailAddress: null,
-    }, { asyncValidator: this.personDoesNotAlreadyExist })
+    })
   }
 
   ionViewDidLoad() {
@@ -56,18 +56,6 @@ export class PersonEditPage {
       this.person = this.navParams.data.person
       this.form.patchValue(this.person)
     }
-  }
-
-  personDoesNotAlreadyExist: AsyncValidatorFn = c => {
-    let lastname = c.get("lastname")
-    let firstname = c.get("firstname")
-
-    if (!lastname.value || !firstname.value) return of(null)
-
-    return this.members.getMember$(lastname.value, firstname.value).pipe(
-      map(m => !m ? null : { "memberAlreadyExists": true }),
-      take(1),
-    )
   }
 
   problems() {
